@@ -35,64 +35,15 @@ This project walks through the entire journey of building a generative language 
 
 In the 2017 paper by Vaswani et al., the Transformer was designed for **Machine Translation** (e.g. converting French sentences into English). Because translation has an input language and an output language, it required an **Encoder-Decoder** dual-tower design:
 
-```mermaid
-flowchart TD
-    subgraph Encoder["1. ENCODER (Source: e.g. French Sentence)"]
-        InTokens["Input Words"] --> InEmbed["Input Embedding"]
-        InPos["Sinusoidal Positional Encoding"] --> InAdd["(+)"]
-        InEmbed --> InAdd
-        InAdd --> EncLayerIn["Encoder Input"]
+<p align="center">
+  <img src="./transformer-arch.png" alt="Transformer Architecture - Attention Is All You Need" width="480" />
+</p>
 
-        subgraph EncBlock["Encoder Layer (Repeated 6 times)"]
-            EncLayerIn --> EncMHA["Multi-Head Self-Attention (Bidirectional)"]
-            EncLayerIn --> EncSkip1["Residual Highway"]
-            EncMHA --> EncAddNorm1["Add & Norm (Post-LN)"]
-            EncSkip1 --> EncAddNorm1
-            
-            EncAddNorm1 --> EncFFN["Feed-Forward Network"]
-            EncAddNorm1 --> EncSkip2["Residual Highway"]
-            EncFFN --> EncAddNorm2["Add & Norm (Post-LN)"]
-            EncSkip2 --> EncAddNorm2
-        end
+*Figure 1: The original Transformer model architecture from "Attention Is All You Need" (Vaswani et al., 2017).*
 
-        EncAddNorm2 --> EncOut["Encoder Memory: Keys (K) & Values (V)"]
-    end
-
-    subgraph Decoder["2. DECODER (Target: e.g. English Translation)"]
-        OutTokens["Target Words (shifted right)"] --> OutEmbed["Output Embedding"]
-        OutPos["Sinusoidal Positional Encoding"] --> OutAdd["(+)"]
-        OutEmbed --> OutAdd
-        OutAdd --> DecLayerIn["Decoder Input"]
-
-        subgraph DecBlock["Decoder Layer (Repeated 6 times)"]
-            DecLayerIn --> DecMaskedMHA["Masked Multi-Head Attention (Causal)"]
-            DecLayerIn --> DecSkip1["Residual Highway"]
-            DecMaskedMHA --> DecAddNorm1["Add & Norm"]
-            DecSkip1 --> DecAddNorm1
-
-            DecAddNorm1 --> DecCrossMHA["Cross-Attention (Queries from Decoder, Keys/Values from Encoder)"]
-            DecAddNorm1 --> DecSkip2["Residual Highway"]
-            DecCrossMHA --> DecAddNorm2["Add & Norm"]
-            DecSkip2 --> DecAddNorm2
-
-            DecAddNorm2 --> DecFFN["Feed-Forward Network"]
-            DecAddNorm2 --> DecSkip3["Residual Highway"]
-            DecFFN --> DecAddNorm3["Add & Norm"]
-            DecSkip3 --> DecAddNorm3
-        end
-
-        DecAddNorm3 --> DecOut["Decoder Representations"]
-    end
-
-    EncOut -->|"Passes Keys & Values"| DecCrossMHA
-    DecOut --> FinalLinear["Linear Layer"]
-    FinalLinear --> FinalSoftmax["Softmax"]
-    FinalSoftmax --> OutProbs["Predicted Translated Word"]
-```
-
-- **Encoder**: Reads the full input sentence all at once. Tokens can look both left and right (**bidirectional attention**).
+- **Encoder (Left Tower)**: Reads the full input sentence all at once. Tokens can look both left and right (**bidirectional attention**).
 - **Cross-Attention**: Allows the decoder to "look back" at the encoder's processed source sentence while generating translated words.
-- **Decoder**: Predicts words one-by-one. It uses a **causal mask** so it cannot peek into future target words.
+- **Decoder (Right Tower)**: Predicts words one-by-one. It uses a **causal mask** so it cannot peek into future target words.
 
 ---
 
