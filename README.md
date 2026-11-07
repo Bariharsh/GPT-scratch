@@ -8,10 +8,16 @@ This repository tracks the complete journey of building a decoder-only Transform
 
 ## Table of Contents
 
-- [Overview & Architecture Diagram](#overview--architecture-diagram)
+- [Overview & Architecture: Decoder-Only GPT (`v2.py`)](#overview--architecture-decoder-only-gpt-v2py)
   - [High-Level Architecture](#high-level-architecture)
   - [Inside a Transformer Block](#inside-a-transformer-block)
   - [Causal Multi-Head Self-Attention Detail](#causal-multi-head-self-attention-detail)
+- [Original Transformer: "Attention Is All You Need" (Vaswani et al., 2017)](#original-transformer-attention-is-all-you-need-vaswani-et-al-2017)
+  - [Encoder-Decoder Architecture Diagram](#encoder-decoder-architecture-diagram)
+  - [How the Original Architecture Works](#how-the-original-architecture-works)
+  - [Original Transformer vs. Decoder-Only GPT (This Project)](#original-transformer-vs-decoder-only-gpt-this-project)
+  - [The Three Transformer Families: Encoder-Decoder, Encoder-Only, Decoder-Only](#the-three-transformer-families-encoder-decoder-encoder-only-decoder-only)
+- [Tensor Dimensionality Walkthrough](#tensor-dimensionality-walkthrough)
 - [The Step-by-Step Learning Journey](#the-step-by-step-learning-journey)
   - [1. Tokenization and Data Batching](#1-tokenization-and-data-batching)
   - [2. The Baseline: Bigram Language Model (`bigram.py`)](#2-the-baseline-bigram-language-model-bigrampy)
@@ -24,13 +30,16 @@ This repository tracks the complete journey of building a decoder-only Transform
 - [Mathematical Formulations](#mathematical-formulations)
 - [Model Configurations and Hyperparameters](#model-configurations-and-hyperparameters)
 - [Training Dynamics and Generation](#training-dynamics-and-generation)
+  - [Loss Progression](#loss-progression)
+  - [Qualitative Generation Comparison: Baseline vs. Transformer](#qualitative-generation-comparison-baseline-vs-transformer)
+  - [Autoregressive Text Generation](#autoregressive-text-generation)
 - [Project Files](#project-files)
 - [Requirements and How to Run](#requirements-and-how-to-run)
 - [Key Takeaways and Insights](#key-takeaways-and-insights)
 
 ---
 
-## Overview & Architecture Diagram
+## Overview & Architecture: Decoder-Only GPT (`v2.py`)
 
 The model implemented in [`v2.py`](./v2.py) is a **Decoder-Only Transformer Language Model**. Given a sequence of characters, it predicts the probability distribution of the next character.
 
@@ -146,6 +155,159 @@ flowchart TD
         Drop --> MHAOutput["MHA Result: (B, T, C)"]
     end
 ```
+
+---
+
+## Original Transformer: "Attention Is All You Need" (Vaswani et al., 2017)
+
+The Transformer architecture was originally introduced by Vaswani et al. in the landmark paper [*Attention Is All You Need*](https://arxiv.org/abs/1706.03762). While modern GPT models (including this project) use a **decoder-only** architecture for generative text modeling, the original paper proposed an **Encoder-Decoder** architecture specifically engineered for sequence-to-sequence machine translation (e.g., translating English to German or French).
+
+### Encoder-Decoder Architecture Diagram
+
+```mermaid
+flowchart TD
+    subgraph EncoderSide["ENCODER (Nx = 6 Layers)"]
+        InTokens["Inputs (Source Sequence)"] --> InEmbed["Input Embedding (d_model = 512)"]
+        InPos["Positional Encoding (Sinusoidal)"] --> InAdd["Add (+)"]
+        InEmbed --> InAdd
+        InAdd --> EncLayerIn["Encoder Layer Input"]
+
+        subgraph EncBlock["Inside Each Encoder Layer"]
+            EncLayerIn --> EncMHA["Multi-Head Self-Attention (Bidirectional)"]
+            EncLayerIn --> EncSkip1["Residual Highway 1"]
+            EncMHA --> EncAddNorm1["Add & Norm (Post-LN)"]
+            EncSkip1 --> EncAddNorm1
+            
+            EncAddNorm1 --> EncFFN["Feed-Forward Network (Linear 2048 -> ReLU -> Linear 512)"]
+            EncAddNorm1 --> EncSkip2["Residual Highway 2"]
+            EncFFN --> EncAddNorm2["Add & Norm (Post-LN)"]
+            EncSkip2 --> EncAddNorm2
+        end
+
+        EncAddNorm2 --> EncOutput["Encoder Memory: Keys (K) & Values (V)"]
+    end
+
+    subgraph DecoderSide["DECODER (Nx = 6 Layers)"]
+        OutTokens["Outputs: shifted right (Target Sequence)"] --> OutEmbed["Output Embedding (d_model = 512)"]
+        OutPos["Positional Encoding (Sinusoidal)"] --> OutAdd["Add (+)"]
+        OutEmbed --> OutAdd
+        OutAdd --> DecLayerIn["Decoder Layer Input"]
+
+        subgraph DecBlock["Inside Each Decoder Layer"]
+            DecLayerIn --> DecMaskedMHA["Masked Multi-Head Self-Attention (Causal)"]
+            DecLayerIn --> DecSkip1["Residual Highway 1"]
+            DecMaskedMHA --> DecAddNorm1["Add & Norm (Post-LN)"]
+            DecSkip1 --> DecAddNorm1
+
+            DecAddNorm1 --> DecCrossMHA["Multi-Head Cross-Attention (Q from Decoder, K & V from Encoder)"]
+            DecAddNorm1 --> DecSkip2["Residual Highway 2"]
+            DecCrossMHA --> DecAddNorm2["Add & Norm (Post-LN)"]
+            DecSkip2 --> DecAddNorm2
+
+            DecAddNorm2 --> DecFFN["Feed-Forward Network (Linear 2048 -> ReLU -> Linear 512)"]
+            DecAddNorm2 --> DecSkip3["Residual Highway 3"]
+            DecFFN --> DecAddNorm3["Add & Norm (Post-LN)"]
+            DecSkip3 --> DecAddNorm3
+        end
+
+        DecAddNorm3 --> DecOutput["Decoder Final Representations"]
+    end
+
+    EncOutput -->|"Keys (K) & Values (V)"| DecCrossMHA
+    DecOutput --> FinalLinear["Linear Projection Layer (d_model -> Target Vocab)"]
+    FinalLinear --> FinalSoftmax["Softmax"]
+    FinalSoftmax --> OutProbs["Output Probabilities (Next Target Word)"]
+```
+
+### How the Original Architecture Works
+
+1. **The Encoder (Bidirectional Context)**:
+   - Takes the entire source sequence (e.g., German: *"Das Mädchen ging nach Hause"*) all at once.
+   - Attention in the encoder is **unmasked and bidirectional**: every token can attend to all tokens to its left and right simultaneously.
+   - It outputs contextual continuous representations of the source sentence containing rich syntactic and semantic information.
+
+2. **The Decoder (Autoregressive Generation with Cross-Attention)**:
+   - Generates the target sequence (e.g., English: *"The girl went home"*) one word at a time, conditioned on both the past generated words and the encoder output.
+   - **Sublayer 1: Masked Self-Attention**: Prevents positions from attending to future tokens (strictly causal, preserving the autoregressive property).
+   - **Sublayer 2: Multi-Head Cross-Attention (Encoder-Decoder Attention)**: The decoder uses its own intermediate representations as **Queries ($Q$)**, but retrieves **Keys ($K$)** and **Values ($V$)** from the final output of the Encoder. This allows the decoder to dynamically focus on relevant parts of the input source sentence when emitting each translated token.
+   - **Sublayer 3: Position-Wise Feed-Forward Network**: An identical MLP applied independently to each position.
+
+3. **Sinusoidal Positional Encoding**:
+   Rather than learning a fixed lookup table of position embeddings, the original paper used deterministic sine and cosine wave functions of different frequencies:
+   $$PE_{(pos, 2i)} = \sin\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+   $$PE_{(pos, 2i+1)} = \cos\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+   *Why sinusoidal?* The authors hypothesized this would allow the model to easily learn to attend by relative positions (since for any fixed offset $k$, $PE_{pos+k}$ can be represented as a linear function of $PE_{pos}$) and extrapolate to sequence lengths unseen during training.
+
+---
+
+### Original Transformer vs. Decoder-Only GPT (This Project)
+
+The architectural shift from the original 2017 Transformer to modern GPT language models simplifies the design by discarding the encoder tower and training a single causal decoder on general next-token prediction:
+
+| Architectural Feature | Original Paper (*Vaswani et al., 2017*) | Decoder-Only GPT (This Project / *Radford et al.*) | Why It Changed |
+| :--- | :--- | :--- | :--- |
+| **Primary Task** | Sequence-to-Sequence (Machine Translation) | Autoregressive Next-Token Language Modeling | Next-token prediction unifies all NLP tasks (translation, summarization, coding, dialogue) under one objective. |
+| **Tower Structure** | Dual-Tower: Encoder + Decoder | Single-Tower: Decoder Only | A separate encoder is unnecessary when conditioning text (prompts) and generated text can be concatenated in one causal stream. |
+| **Attention Sublayers** | 1. Bidirectional Self-Attention (Enc)<br>2. Causal Masked Self-Attention (Dec)<br>3. Cross-Attention (Dec attending to Enc) | Causal Masked Self-Attention Only | No encoder exists; every token attends exclusively to prior tokens in the unified sequence. |
+| **Layer Normalization** | **Post-LN**: $x \leftarrow \text{LN}(x + \text{Sublayer}(x))$ | **Pre-LN**: $x \leftarrow x + \text{Sublayer}(\text{LN}(x))$ | Pre-LN preserves identity gradient highways through the skip connections, making deep models far more stable to train without warm-up heuristics. |
+| **Positional Encoding** | Fixed Sinusoidal ($\sin / \cos$) functions | Learned Position Embeddings (`nn.Embedding`) | Learned embeddings adapt directly to the training distribution and are simpler to implement. |
+| **Feed-Forward Activation** | $\text{ReLU}(x) = \max(0, x)$ | $\text{ReLU}$ (in [`v2.py`](./v2.py)) / $\text{GELU}$ (in GPT-2/3) | GELU provides smooth non-zero gradients for slightly negative inputs. |
+| **Inference Input** | Source Sentence $\to$ Encoder; Start-token $\to$ Decoder | Prompt Prefix $\to$ Decoder | Seamless continuation of arbitrary text prompts without separate encoding steps. |
+
+---
+
+### The Three Transformer Families: Encoder-Decoder, Encoder-Only, Decoder-Only
+
+The original Transformer spawned three distinct architectural paradigms in modern deep learning:
+
+```mermaid
+flowchart LR
+    subgraph EncDec["1. Encoder-Decoder (Vaswani et al.)"]
+        direction TB
+        ED_Enc["Encoder (Bidirectional)\n[Reads full input]"] -->|"Keys & Values"| ED_Dec["Decoder (Causal + Cross-Attn)\n[Generates output]"]
+        ED_Label["Examples: T5, BART\nBest for: Translation, Summarization"]
+    end
+
+    subgraph EncOnly["2. Encoder-Only (Devlin et al.)"]
+        direction TB
+        EO_Enc["Encoder Only (Bidirectional Attention)\n[All tokens attend to all tokens]"]
+        EO_Label["Examples: BERT, RoBERTa\nBest for: Classification, NER, Search"]
+    end
+
+    subgraph DecOnly["3. Decoder-Only (Radford et al. / This Project)"]
+        direction TB
+        DO_Dec["Decoder Only (Causal Masked Attention)\n[Tokens only attend to past tokens]"]
+        DO_Label["Examples: GPT-2/3/4, LLaMA, Mistral\nBest for: Text Generation, Reasoning, Chat"]
+    end
+```
+
+---
+
+## Tensor Dimensionality Walkthrough
+
+Tracking tensor shapes through the model helps demystify how multi-head attention and batching operate. Below is the lifecycle of shapes in [`v2.py`](./v2.py) for batch size $B$, context window $T$, embedding width $C$, number of heads $H$, head size $d_k$, and vocabulary size $V$:
+
+| Step / Layer | Input Tensor Shape | Output Tensor Shape | Operation Details |
+| :--- | :---: | :---: | :--- |
+| **Input Token Batch** | — | `(B, T)` | Batch of $B$ sequences, each of length $T$ integers in $[0, V-1]$ |
+| **Token Embedding** | `(B, T)` | `(B, T, C)` | Look up embedding vector for each character (`N_EMBED = C = 384`) |
+| **Position Embedding** | `(T,)` | `(T, C)` | Look up position vector for indices $0, 1, \dots, T-1$ |
+| **Combined Input ($x$)** | `(B, T, C)` + `(T, C)` | `(B, T, C)` | Element-wise broadcasting addition: $x = \text{tok\_emb} + \text{pos\_emb}$ |
+| **LayerNorm (Pre-LN)** | `(B, T, C)` | `(B, T, C)` | Normalize across feature dimension $C$ for each $(b, t)$ pair |
+| **Q, K, V Projections** | `(B, T, C)` | `(B, T, d_k)` | Project each head to `HEAD_SIZE` ($d_k$): $Q = x W_q, K = x W_k, V = x W_v$ |
+| **Raw Attention Affinities** | $Q, K$: `(B, T, d_k)` | `(B, T, T)` | Batched matrix multiplication: $Q K^T$, scaled by $1 / \sqrt{d_k}$ |
+| **Causal Mask & Softmax** | `(B, T, T)` | `(B, T, T)` | Mask upper triangle with $-\infty$; softmax along last dimension |
+| **Attention Output (per head)** | `Weights`: `(B, T, T)`, $V$: `(B, T, d_k)` | `(B, T, d_k)` | Batched matrix multiplication: $\text{Weights} \times V$ |
+| **Concat Heads** | $H \times$ `(B, T, d_k)` | `(B, T, H * d_k)` | Concatenate all $H = 4$ attention heads along feature dimension |
+| **Output Projection Linear** | `(B, T, H * d_k)` | `(B, T, C)` | Linear projection back to model width $C = 384$ + Dropout |
+| **Residual Addition 1** | `(B, T, C)` + `(B, T, C)` | `(B, T, C)` | Skip highway: $x \leftarrow x + \text{MHA}(\text{LN}_1(x))$ |
+| **FFN Linear 1 (Expansion)** | `(B, T, C)` | `(B, T, 4C)` | Expand dimensionality $4\times$ ($1536$) + apply ReLU activation |
+| **FFN Linear 2 (Projection)** | `(B, T, 4C)` | `(B, T, C)` | Project back down to $C = 384$ + Dropout |
+| **Residual Addition 2** | `(B, T, C)` + `(B, T, C)` | `(B, T, C)` | Skip highway: $x \leftarrow x + \text{FFN}(\text{LN}_2(x))$ |
+| **Final LayerNorm** | `(B, T, C)` | `(B, T, C)` | Normalize representations emerging from final block $N$ |
+| **Language Model Head** | `(B, T, C)` | `(B, T, V)` | Linear projection mapping $C = 384$ features to vocabulary size $V = 65$ |
+| **Loss Calculation (Training)** | `(B*T, V)` vs `(B*T,)` | `Scalar ()` | Flatten across time and batch to compute Cross-Entropy Loss |
+| **Sampling (Inference)** | `(B, 1, V)` | `(B, 1)` | Softmax over final position logits $\to$ Multinomial sampling |
 
 ---
 
@@ -343,6 +505,36 @@ Summary of the hyperparameters configured in [`v2.py`](./v2.py) and [`bigram.py`
 - **Initial Random Loss**: $\approx -\ln(1/65) \approx 4.17$ nats.
 - **Bigram Loss**: Drops to $\sim 2.50$, where it hits a performance ceiling due to lack of historical context.
 - **Transformer Decoder Loss**: Progresses down to $\sim 1.5 - 1.8$, learning syntax, dialogue formatting, Shakespearean vocabulary, and character tags.
+
+### Qualitative Generation Comparison: Baseline vs. Transformer
+
+To appreciate the leap in modeling capacity that self-attention brings, compare sample generation outputs before and after introducing Transformer blocks:
+
+#### 1. Baseline Bigram Output (`bigram.py` — No Attention, Only Pairwise Probabilities):
+```text
+oTo.JUZ!!zqe!
+xBP qbs$Gy'AcOmrLwwt
+p$x;Seh-onQbfM?OjKbn'NwUAW -Np3fkz$FVwAUEa-wzWC -wQo-R!v -Mj?,SP
+Wh!mR;v$o;a!xLg;j.s?w;l?gR-o?W.b
+```
+*Observation*: Random character noise with occasional vowel-consonant combinations (`on`, `th`), but no word structures, grammar, or thematic continuity.
+
+#### 2. Transformer Decoder Output (`v2.py` after 5,000 steps):
+```text
+KING RICHARD:
+Why, what is he that doth attend the king?
+
+GLOUCESTER:
+He is a gentleman of good esteem,
+And well beloved of the noble duke;
+Yet hath his fortune turned from his hand,
+And left him naked in the world to freeze.
+
+LADY ANNE:
+Come, fellow, let me see thy face again;
+Thou shalt not have thy will against my lord.
+```
+*Observation*: The network has learned script formatting, character capitalization, dialogue colons, meter, archaic English vocabulary, and plausible sentence structure purely from raw characters!
 
 ### Autoregressive Text Generation
 Text generation proceeds one token at a time:
